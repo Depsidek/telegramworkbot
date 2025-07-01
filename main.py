@@ -23,7 +23,7 @@ def save_log_row(user_id, date, arrival=None, leave=None, worked=None):
         with open(LOG_FILE, 'r', newline='') as f:
             logs = list(csv.reader(f))
 
-    # Zkontroluj, jestli existuje záznam pro dnešní den
+    # Zkontroluj, jestli existuje záznam pro daný den a uživatele
     updated = False
     for i, row in enumerate(logs):
         if row[0] == str(user_id) and row[1] == date:
@@ -40,7 +40,7 @@ def save_log_row(user_id, date, arrival=None, leave=None, worked=None):
     if not updated:
         logs.append([str(user_id), date, arrival or "", leave or "", worked or ""])
 
-    # Zapiš zpět
+    # Zapiš zpět do souboru
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(logs)
@@ -65,7 +65,6 @@ def handle_buttons(update: Update, context: CallbackContext):
         clear_log(update, context)
     elif text == "🕰️ Ruční zápis času":
         update.message.reply_text("Napiš čas a typ (např. 08:00 příchod nebo 16:00 odchod).", reply_markup=start_keyboard())
-        return
     else:
         # zpracování ručního zápisu času ve formátu HH:MM příchod/odchod
         parts = text.strip().split()
@@ -86,7 +85,6 @@ def handle_manual_time(update: Update, context: CallbackContext, time_str, actio
     date = datetime.now().strftime('%Y-%m-%d')
     time_full = time_str + ":00"
     
-    # Načti aktuální záznamy
     logs = []
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE, 'r', newline='') as f:
@@ -99,7 +97,7 @@ def handle_manual_time(update: Update, context: CallbackContext, time_str, actio
                 row[2] = time_full
             elif action == 'odchod':
                 row[3] = time_full
-            # pokud máme oba časy, spočítej odpracovaný čas
+            # spočítej odpracovaný čas, pokud máme oboje
             if row[2] and row[3]:
                 try:
                     t1 = datetime.strptime(f"{date} {row[2]}", '%Y-%m-%d %H:%M:%S')
@@ -108,16 +106,18 @@ def handle_manual_time(update: Update, context: CallbackContext, time_str, actio
                     hours = diff.seconds // 3600
                     minutes = (diff.seconds % 3600) // 60
                     row[4] = f"{hours}h {minutes}m"
-                except:
+                except Exception:
                     pass
             logs[i] = row
             updated = True
             break
+
     if not updated:
         if action == 'příchod':
             logs.append([str(user_id), date, time_full, "", ""])
         else:
             logs.append([str(user_id), date, "", time_full, ""])
+
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(logs)
@@ -147,7 +147,7 @@ def handle_departure(update: Update, context: CallbackContext):
                     try:
                         arrival_time = datetime.strptime(f"{date} {row[2]}", '%Y-%m-%d %H:%M:%S')
                         break
-                    except:
+                    except Exception:
                         continue
 
     if arrival_time:
@@ -163,18 +163,20 @@ def handle_departure(update: Update, context: CallbackContext):
 
 def show_log(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
+    show_user_logs(update, user_id)
+
+def show_user_logs(update, user_id):
     if not os.path.exists(LOG_FILE):
         update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
         return
 
-def show_user_logs(update, user_id):
     with open(LOG_FILE, 'r') as f:
         reader = csv.reader(f)
         logs = [row for row in reader if row[0] == user_id]
 
     if not logs:
         update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
-        return  # OK, protože jsme uvnitř funkce
+        return
 
     threshold = datetime.now() - timedelta(days=31)
     msg = "📅 Záznamy za posledních 31 dní:\n\n"
@@ -184,20 +186,8 @@ def show_user_logs(update, user_id):
             row_date = datetime.strptime(row[1], '%Y-%m-%d')
             if row_date >= threshold:
                 msg += f"{row[1]} | Příchod: {row[2]} | Odchod: {row[3]} | Odpracováno: {row[4]}\n"
-        except:
+        except Exception:
             continue
-
-    update.message.reply_text(msg, reply_markup=start_keyboard())
-
-
-for row in logs:
-    try:
-        row_date = datetime.strptime(row[1], '%Y-%m-%d')
-        if row_date >= threshold:
-            msg += f"{row[1]} | Příchod: {row[2]} | Odchod: {row[3]} | Odpracováno: {row[4]}\n"
-    except:
-        continue
-
 
     update.message.reply_text(msg, reply_markup=start_keyboard())
 
