@@ -176,7 +176,8 @@ def show_log(update: Update, context: CallbackContext):
         return
 
     threshold = datetime.now() - timedelta(days=31)
-    msg = "📅 Záznamy za posledních 31 dní:
+    msg = "📅 Záznamy za posledních 31 dní:\n\n"
+
 
 "
     for row in logs:
