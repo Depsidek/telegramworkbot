@@ -3,8 +3,8 @@ import csv
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 
 LOG_FILE = 'work_log.csv'
 TOKEN = os.getenv('TELEGRAM_API_TOKEN')
@@ -15,133 +15,195 @@ app = Flask('')
 def home():
     return "Bot běží!"
 
-def save_time(user_id, action, time_str):
-    with open(LOG_FILE, 'a', newline='') as f:
+def save_log_row(user_id, date, arrival=None, leave=None, worked=None):
+    logs = []
+
+    # Načti existující záznamy
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r', newline='') as f:
+            logs = list(csv.reader(f))
+
+    # Zkontroluj, jestli existuje záznam pro dnešní den
+    updated = False
+    for i, row in enumerate(logs):
+        if row[0] == str(user_id) and row[1] == date:
+            if arrival:
+                row[2] = arrival
+            if leave:
+                row[3] = leave
+            if worked:
+                row[4] = worked
+            logs[i] = row
+            updated = True
+            break
+
+    if not updated:
+        logs.append([str(user_id), date, arrival or "", leave or "", worked or ""])
+
+    # Zapiš zpět
+    with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow([user_id, action, time_str])
+        writer.writerows(logs)
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "Ahoj! Použij /in pro příchod, /out pro odchod, "
-        "/settime HH:MM in|out pro nastavení vlastního času, /log pro přehled za posledních 31 dní "
-        "a /clearlog pro smazání tvých záznamů."
-    )
+def start_keyboard():
+    keyboard = [
+        [KeyboardButton("🟢 Příchod"), KeyboardButton("🔴 Odchod")],
+        [KeyboardButton("📅 Zobrazit log"), KeyboardButton("🧼 Smazat log")],
+        [KeyboardButton("🕰️ Ruční zápis času")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def in_command(update: Update, context: CallbackContext):
+def handle_buttons(update: Update, context: CallbackContext):
+    text = update.message.text
+    if text == "🟢 Příchod":
+        handle_arrival(update, context)
+    elif text == "🔴 Odchod":
+        handle_departure(update, context)
+    elif text == "📅 Zobrazit log":
+        show_log(update, context)
+    elif text == "🧼 Smazat log":
+        clear_log(update, context)
+    elif text == "🕰️ Ruční zápis času":
+        update.message.reply_text("Napiš čas a typ (např. 08:00 příchod nebo 16:00 odchod).", reply_markup=start_keyboard())
+        return
+    else:
+        # zpracování ručního zápisu času ve formátu HH:MM příchod/odchod
+        parts = text.strip().split()
+        if len(parts) == 2:
+            time_part, action_part = parts
+            action_part = action_part.lower()
+            if action_part in ['příchod', 'odchod']:
+                try:
+                    datetime.strptime(time_part, '%H:%M')
+                    handle_manual_time(update, context, time_part, action_part)
+                    return
+                except ValueError:
+                    pass
+        update.message.reply_text("Nevím co s tím. Použij tlačítka nebo napiš čas ve formátu HH:MM příchod/odchod.", reply_markup=start_keyboard())
+
+def handle_manual_time(update: Update, context: CallbackContext, time_str, action):
     user_id = update.effective_user.id
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    save_time(user_id, 'IN', now_str)
-    update.message.reply_text(f"Zapsán příchod v {now_str}")
+    date = datetime.now().strftime('%Y-%m-%d')
+    time_full = time_str + ":00"
+    
+    # Načti aktuální záznamy
+    logs = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r', newline='') as f:
+            logs = list(csv.reader(f))
 
-def out_command(update: Update, context: CallbackContext):
+    updated = False
+    for i, row in enumerate(logs):
+        if row[0] == str(user_id) and row[1] == date:
+            if action == 'příchod':
+                row[2] = time_full
+            elif action == 'odchod':
+                row[3] = time_full
+            # pokud máme oba časy, spočítej odpracovaný čas
+            if row[2] and row[3]:
+                try:
+                    t1 = datetime.strptime(f"{date} {row[2]}", '%Y-%m-%d %H:%M:%S')
+                    t2 = datetime.strptime(f"{date} {row[3]}", '%Y-%m-%d %H:%M:%S')
+                    diff = t2 - t1
+                    hours = diff.seconds // 3600
+                    minutes = (diff.seconds % 3600) // 60
+                    row[4] = f"{hours}h {minutes}m"
+                except:
+                    pass
+            logs[i] = row
+            updated = True
+            break
+    if not updated:
+        if action == 'příchod':
+            logs.append([str(user_id), date, time_full, "", ""])
+        else:
+            logs.append([str(user_id), date, "", time_full, ""])
+    with open(LOG_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(logs)
+
+    update.message.reply_text(f"Zapsán {action} v {time_str}", reply_markup=start_keyboard())
+
+def handle_arrival(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     now = datetime.now()
-    now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    date = now.strftime('%Y-%m-%d')
+    time_str = now.strftime('%H:%M:%S')
+    save_log_row(user_id, date, arrival=time_str)
+    update.message.reply_text(f"Zapsán příchod v {time_str}", reply_markup=start_keyboard())
 
-    if not os.path.exists(LOG_FILE):
-        update.message.reply_text("Žádné předchozí záznamy, nejde spočítat odpracovaný čas.")
-        save_time(user_id, 'OUT', now_str)
-        return
-
-    with open(LOG_FILE, 'r') as f:
-        reader = list(csv.reader(f))
-
-    last_in_time = None
-    for row in reversed(reader):
-        if row[0] == str(user_id) and row[1] == 'IN':
-            try:
-                last_in_time = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
-                break
-            except:
-                continue
-
-    save_time(user_id, 'OUT', now_str)
-
-    if last_in_time is None:
-        update.message.reply_text(f"Zapsán odchod v {now_str}, ale nenašel jsem poslední příchod pro výpočet odpracovaného času.")
-        return
-
-    diff = now - last_in_time
-    hodiny = diff.seconds // 3600
-    minuty = (diff.seconds % 3600) // 60
-
-    update.message.reply_text(f"Zapsán odchod v {now_str}. Odpracováno: {hodiny} hodin a {minuty} minut.")
-
-def settime_command(update: Update, context: CallbackContext):
+def handle_departure(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    args = context.args
-    if len(args) != 2:
-        update.message.reply_text("Použití: /settime HH:MM in|out")
-        return
+    now = datetime.now()
+    date = now.strftime('%Y-%m-%d')
+    time_str = now.strftime('%H:%M:%S')
 
-    time_part, action = args
-    action = action.upper()
-    if action not in ['IN', 'OUT']:
-        update.message.reply_text("Druhý parametr musí být 'in' nebo 'out'.")
-        return
+    arrival_time = None
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if row[0] == str(user_id) and row[1] == date and row[2]:
+                    try:
+                        arrival_time = datetime.strptime(f"{date} {row[2]}", '%Y-%m-%d %H:%M:%S')
+                        break
+                    except:
+                        continue
 
-    try:
-        datetime.strptime(time_part, '%H:%M')
-    except ValueError:
-        update.message.reply_text("Čas musí být ve formátu HH:MM (např. 08:30).")
-        return
+    if arrival_time:
+        diff = now - arrival_time
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        worked = f"{hours}h {minutes}m"
+        save_log_row(user_id, date, leave=time_str, worked=worked)
+        update.message.reply_text(f"Zapsán odchod v {time_str}. Odpracováno: {worked}", reply_markup=start_keyboard())
+    else:
+        save_log_row(user_id, date, leave=time_str)
+        update.message.reply_text(f"Zapsán odchod v {time_str}. (Příchod nebyl zaznamenán)", reply_markup=start_keyboard())
 
-    today = datetime.now().strftime('%Y-%m-%d')
-    full_time = f"{today} {time_part}:00"
-    save_time(user_id, action, full_time)
-    update.message.reply_text(f"Zapsán {action.lower()} v {full_time}")
-
-def log_command(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
+def show_log(update: Update, context: CallbackContext):
+    user_id = str(update.effective_user.id)
     if not os.path.exists(LOG_FILE):
-        update.message.reply_text("Žádné záznamy.")
+        update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
         return
 
     with open(LOG_FILE, 'r') as f:
         reader = csv.reader(f)
-        logs = [row for row in reader if row[0] == str(user_id)]
+        logs = [row for row in reader if row[0] == user_id]
 
     if not logs:
-        update.message.reply_text("Žádné záznamy pro tebe.")
+        update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
         return
 
-    now = datetime.now()
-    threshold = now - timedelta(days=31)
+    threshold = datetime.now() - timedelta(days=31)
+    msg = "📅 Záznamy za posledních 31 dní:
 
-    filtered_logs = []
+"
     for row in logs:
         try:
-            log_time = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
-            if log_time >= threshold:
-                filtered_logs.append(row)
+            row_date = datetime.strptime(row[1], '%Y-%m-%d')
+            if row_date >= threshold:
+                msg += f"{row[1]} | Příchod: {row[2]} | Odchod: {row[3]} | Odpracováno: {row[4]}
+"
         except:
             continue
 
-    if not filtered_logs:
-        update.message.reply_text("Žádné záznamy za posledních 31 dní.")
-        return
+    update.message.reply_text(msg, reply_markup=start_keyboard())
 
-    msg = f"Tvoje záznamy za posledních 31 dní (celkem {len(filtered_logs)}):\n"
-    for row in filtered_logs:
-        msg += f"{row[1]}: {row[2]}\n"
-
-    update.message.reply_text(msg)
-
-def clearlog_command(update: Update, context: CallbackContext):
+def clear_log(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     if not os.path.exists(LOG_FILE):
-        update.message.reply_text("Log zatím neexistuje, nic nebylo smazáno.")
+        update.message.reply_text("Log neexistuje.", reply_markup=start_keyboard())
         return
 
-    with open(LOG_FILE, 'r', newline='') as f:
-        reader = csv.reader(f)
-        rows = [row for row in reader if row[0] != user_id]
+    with open(LOG_FILE, 'r') as f:
+        rows = [row for row in csv.reader(f) if row[0] != user_id]
 
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(rows)
 
-    update.message.reply_text("Tvoje záznamy byly smazány.")
+    update.message.reply_text("Tvůj log byl smazán.", reply_markup=start_keyboard())
 
 def main():
     if not TOKEN:
@@ -153,12 +215,8 @@ def main():
 
     updater = Updater(TOKEN)
     dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("in", in_command))
-    dp.add_handler(CommandHandler("out", out_command))
-    dp.add_handler(CommandHandler("settime", settime_command))
-    dp.add_handler(CommandHandler("log", log_command))
-    dp.add_handler(CommandHandler("clearlog", clearlog_command))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_buttons))
+    dp.add_handler(CommandHandler("start", handle_buttons))
     updater.start_polling()
     updater.idle()
 
