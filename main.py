@@ -167,16 +167,28 @@ def show_log(update: Update, context: CallbackContext):
         update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
         return
 
-with open(LOG_FILE, 'r') as f:
-    reader = csv.reader(f)
-    logs = [row for row in reader if row[0] == user_id]
+def show_user_logs(update, user_id):
+    with open(LOG_FILE, 'r') as f:
+        reader = csv.reader(f)
+        logs = [row for row in reader if row[0] == user_id]
 
-if not logs:
-    update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
-    return
+    if not logs:
+        update.message.reply_text("Žádné záznamy.", reply_markup=start_keyboard())
+        return  # OK, protože jsme uvnitř funkce
 
-threshold = datetime.now() - timedelta(days=31)
-msg = "📅 Záznamy za posledních 31 dní:\n\n"
+    threshold = datetime.now() - timedelta(days=31)
+    msg = "📅 Záznamy za posledních 31 dní:\n\n"
+
+    for row in logs:
+        try:
+            row_date = datetime.strptime(row[1], '%Y-%m-%d')
+            if row_date >= threshold:
+                msg += f"{row[1]} | Příchod: {row[2]} | Odchod: {row[3]} | Odpracováno: {row[4]}\n"
+        except:
+            continue
+
+    update.message.reply_text(msg, reply_markup=start_keyboard())
+
 
 for row in logs:
     try:
